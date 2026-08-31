@@ -95,7 +95,14 @@ class DouYinCrawler(AbstractCrawler):
                 await self.browser_context.add_init_script(path="libs/stealth.min.js")
 
             self.context_page = await self.browser_context.new_page()
-            await self.context_page.goto(self.index_url)
+            # mom-index 本地补丁：默认 wait_until="load" 会等抖音首页所有第三方资源
+            # onload，首页负载波动时 30s 超时（2026-08-29 实测 goto 反复 TimeoutError，
+            # 而浏览器自身已正常打开 /jingxuan）。改 domcontentloaded 只等 DOM 解析，
+            # 规避资源慢卡死；timeout 拉到 60s 兜底。CDP 复用浏览器已登录，DOM 解析后
+            # localStorage(HasUserLogin) 通常已由前端同步脚本写入，pong 仍能判定。
+            await self.context_page.goto(
+                self.index_url, wait_until="domcontentloaded", timeout=60000
+            )
 
             self.dy_client = await self.create_douyin_client(httpx_proxy_format)
             if not await self.dy_client.pong(browser_context=self.browser_context):
