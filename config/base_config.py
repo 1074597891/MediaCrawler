@@ -6,6 +6,7 @@
 # GitHub: https://github.com/NanmiCoder
 # Licensed under NON-COMMERCIAL LEARNING LICENSE 1.1
 #
+import os
 
 # 声明：本代码仅供学习和研究目的使用。使用者应遵守以下原则：
 # 1. 不得用于任何商业用途。
@@ -60,7 +61,8 @@ ENABLE_CDP_MODE = True
 
 # CDP 调试端口，用于与浏览器通信
 # 如果端口被占用，系统会自动尝试下一个可用端口
-CDP_DEBUG_PORT = 9222
+# mom-index 双号轮换：由采集器通过环境变量 CDP_DEBUG_PORT 指定本轮用哪个号
+CDP_DEBUG_PORT = int(os.environ.get("CDP_DEBUG_PORT", "9222"))
 
 # 自定义浏览器路径（可选）
 # 如果为空，系统会自动检测 Chrome/Edge 的安装路径
