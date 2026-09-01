@@ -397,9 +397,22 @@ class DouYinCrawler(AbstractCrawler):
             return await self.launch_browser(chromium, playwright_proxy, user_agent, headless)
 
     async def close(self) -> None:
-        """Close browser context"""
+        """Close browser context (and any pages this crawler opened)."""
         # If you use CDP mode, special processing is required
         if self.cdp_manager:
+            # mom-index 抖音 CDP 复用外部浏览器（9222）时：new_page() 开的页不会随
+            # CDP session 断开而关闭，会永久留在用户浏览器里当多余标签。这里在关
+            # context 前先把多余的页关了，只留 pages[0]（用户登录用的原始标签）。
+            try:
+                pages = self.browser_context.pages
+                if len(pages) > 1:
+                    for page in pages[1:]:
+                        try:
+                            await page.close()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
             await self.cdp_manager.cleanup()
             self.cdp_manager = None
         else:
