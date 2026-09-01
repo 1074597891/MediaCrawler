@@ -94,7 +94,17 @@ class DouYinCrawler(AbstractCrawler):
                 # stealth.min.js is a js script to prevent the website from detecting the crawler.
                 await self.browser_context.add_init_script(path="libs/stealth.min.js")
 
-            self.context_page = await self.browser_context.new_page()
+            # mom-index 补丁（2026-09-01）：CDP 复用常驻浏览器（9222）时，每个板块一个
+            # subprocess，每次 new_page() 都在同一个窗口里叠一个新标签。正常收尾时
+            # close() 会把多的页关掉，但 subprocess 超时被 kill、急停、进程崩时 close()
+            # 根本没机会跑 → 标签永久残留在常驻浏览器里累积（实测堆到验证中心）。
+            # 改成直接复用已有标签（用户手动打开 / 上次留下的那个），全程不开新页：
+            # 既没有残留累积，也更像真人 —— 同一个标签翻页，而不是不停开新标签。
+            _existing_pages = self.browser_context.pages
+            if _existing_pages:
+                self.context_page = _existing_pages[0]
+            else:
+                self.context_page = await self.browser_context.new_page()
             # mom-index 本地补丁：默认 wait_until="load" 会等抖音首页所有第三方资源
             # onload，首页负载波动时 30s 超时（2026-08-29 实测 goto 反复 TimeoutError，
             # 而浏览器自身已正常打开 /jingxuan）。改 domcontentloaded 只等 DOM 解析，
@@ -400,9 +410,11 @@ class DouYinCrawler(AbstractCrawler):
         """Close browser context (and any pages this crawler opened)."""
         # If you use CDP mode, special processing is required
         if self.cdp_manager:
-            # mom-index 抖音 CDP 复用外部浏览器（9222）时：new_page() 开的页不会随
-            # CDP session 断开而关闭，会永久留在用户浏览器里当多余标签。这里在关
-            # context 前先把多余的页关了，只留 pages[0]（用户登录用的原始标签）。
+            # mom-index 抖音 CDP 复用外部浏览器（9222）时：开过的页不会随 CDP session
+            # 断开而关闭，会永久留在浏览器里当多余标签。这里在关 context 前把多余的页
+            # 关掉，只留 pages[0]（用户手动打开 / 采集一直在用的那个标签）。
+            # 2026-09-01 起采集本身已复用 pages[0] 不再开新页（见 start()），这段就是
+            # 兜底：顺手清掉历史上残留的标签（超时被 kill / 急停留下的那些）。
             try:
                 pages = self.browser_context.pages
                 if len(pages) > 1:
