@@ -64,6 +64,44 @@ class DouYinCrawler(AbstractCrawler):
         self.cdp_manager = None
         self.ip_proxy_pool = None  # Proxy IP pool for automatic proxy refresh
 
+    async def _open_index_page(self):
+        """挑一个可用的页面打开抖音首页；坏页直接丢弃重建（mom-index 2026-09-04）。
+
+        常驻 CDP 浏览器里的页面可能已 detach（is_closed() 仍 False、CDP /json/list
+        照样显示 URL，肉眼看不出坏）。复用这种页会让 goto 抛
+        "Frame has been detached"，且之后每个 subprocess 都拿到同一个坏页 →
+        该号整组板块全废、必须重启浏览器才恢复（9223 连续两轮实测）。
+        兜底两层：跳过已关闭的页；goto 失败 → 关掉坏页、新建页面重试一次。
+
+        goto 用 domcontentloaded（mom-index 2026-08-29）：默认 wait_until="load"
+        会等抖音首页所有第三方资源 onload，首页负载波动时 30s 超时，而浏览器自身
+        早已正常打开 /jingxuan。timeout 拉到 60s 兜底。
+        """
+        last_err: Optional[Exception] = None
+        for attempt in (1, 2):
+            page = None
+            for p in list(self.browser_context.pages):
+                if not p.is_closed():
+                    page = p
+                    break
+            if page is None:
+                page = await self.browser_context.new_page()
+            try:
+                await page.goto(
+                    self.index_url, wait_until="domcontentloaded", timeout=60000
+                )
+                return page
+            except Exception as e:  # 典型：Frame has been detached
+                last_err = e
+                utils.logger.warning(
+                    f"[DouYinCrawler._open_index_page] 第 {attempt} 次打开首页失败"
+                    f"（{e}），丢弃该页面并重试")
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+        raise last_err
+
     async def start(self) -> None:
         playwright_proxy_format, httpx_proxy_format = None, None
         if config.ENABLE_IP_PROXY:
@@ -100,19 +138,15 @@ class DouYinCrawler(AbstractCrawler):
             # 根本没机会跑 → 标签永久残留在常驻浏览器里累积（实测堆到验证中心）。
             # 改成直接复用已有标签（用户手动打开 / 上次留下的那个），全程不开新页：
             # 既没有残留累积，也更像真人 —— 同一个标签翻页，而不是不停开新标签。
-            _existing_pages = self.browser_context.pages
-            if _existing_pages:
-                self.context_page = _existing_pages[0]
-            else:
-                self.context_page = await self.browser_context.new_page()
-            # mom-index 本地补丁：默认 wait_until="load" 会等抖音首页所有第三方资源
-            # onload，首页负载波动时 30s 超时（2026-08-29 实测 goto 反复 TimeoutError，
-            # 而浏览器自身已正常打开 /jingxuan）。改 domcontentloaded 只等 DOM 解析，
-            # 规避资源慢卡死；timeout 拉到 60s 兜底。CDP 复用浏览器已登录，DOM 解析后
-            # localStorage(HasUserLogin) 通常已由前端同步脚本写入，pong 仍能判定。
-            await self.context_page.goto(
-                self.index_url, wait_until="domcontentloaded", timeout=60000
-            )
+            #
+            # mom-index 补丁（2026-09-04）：复用前挑健康页 + goto 失败丢弃重建。
+            # 常驻浏览器里的页面可能处于 detached 状态（is_closed() 仍为 False，但
+            # frame 已失效，curl /json/list 也照样显示 URL，看不出坏没坏）。盲目复用
+            # 会让 goto 直接抛 Frame has been detached，且此后每个 subprocess 都复用
+            # 同一个坏页 → 该号整组板块永久报废，只能靠重启浏览器恢复（9223 实测
+            # 连续两轮五个板块全废）。这里两层兜底：跳过已关闭的页；goto 失败则
+            # 关掉坏页、新建页面重试一次。
+            self.context_page = await self._open_index_page()
 
             self.dy_client = await self.create_douyin_client(httpx_proxy_format)
             if not await self.dy_client.pong(browser_context=self.browser_context):
