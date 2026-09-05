@@ -158,10 +158,16 @@ class DouYinCrawler(AbstractCrawler):
                     cookie_str=config.COOKIES,
                 )
                 await login_obj.begin()
-                await self.dy_client.update_cookies(
-                    browser_context=self.browser_context,
-                    urls=self.cookie_urls,
-                )
+            # mom-index 补丁（2026-09-04）：无论是否已登录，都要把浏览器 cookie
+            # 同步给 httpx client。原代码只在「未登录→走登录流程」分支同步，
+            # 而 CDP 复用常驻浏览器时 pong 恒为 True → headers["Cookie"] 一直为空
+            # → creator 模式（走 httpx 直接打 API）等于匿名请求，被 Argus 拦：
+            #   "Blocked by ArgusSecurityPlugin Uifid Not Found"
+            # 搜索模式不受影响，是因为它走浏览器渲染拦 XHR，根本不打 httpx。
+            await self.dy_client.update_cookies(
+                browser_context=self.browser_context,
+                urls=self.cookie_urls,
+            )
             crawler_type_var.set(config.CRAWLER_TYPE)
             if config.CRAWLER_TYPE == "search":
                 # Search for notes and retrieve their comment information.
